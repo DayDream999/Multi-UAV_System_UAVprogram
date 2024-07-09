@@ -77,6 +77,68 @@ class packet_processing(object):
         self.uavs_info = [[] for _ in range(10)]
         self.task_locking = []
 
+
+    ## testing for lucas' customized mission packet
+    def pack_mapf_packet(self, message_id, uav_id, gps_timestamp, position, heading, velocity, waypoints):
+        """
+        Pack the MAPF packet with the given data.
+
+        :param message_id: the ID of the mission.
+        :param uav_id: The ID of the UAV.
+        :param gps_timestamp: The current GPS timestamp.
+        :param position: Tuple of (latitude, longitude, altitude).
+        :param heading: The current heading of the UAV.
+        :param velocity: The current velocity of the UAV.
+        :param waypoints: List of waypoints, each a tuple of (latitude, longitude).
+        :return: The packed byte array.
+        """
+        horizon_steps = 5
+        
+        # Adjust the waypoints to have exactly 15 entries
+        waypoints = waypoints[:horizon_steps]
+        while len(waypoints) < horizon_steps:
+            waypoints.append((0.0, 0.0))
+        
+        # Pack the basic info
+        packet = pack('<BIddddfff', message_id, uav_id, gps_timestamp, position[0], position[1], position[2], heading, velocity[0], velocity[1])
+        
+        # Pack the waypoints
+        for waypoint in waypoints:
+            packet += pack('<dd', waypoint[0], waypoint[1])
+        
+        return packet
+    
+    def unpack_mapf_packet(self, packet):
+        """
+        Unpack the MAPF packet.
+
+        :param packet: The byte array to unpack.
+        :return: The unpacked data as a tuple.
+        """
+        horizon_steps = 15
+        
+        # Define the format string for the initial part of the packet
+        header_format = '<BIddddfff'
+        header_size = 49  # Calculate the size of the header
+        
+        # Unpack the header
+        message_id, uav_id, gps_timestamp, lat, lon, alt, heading, vx, vy = unpack(header_format, packet[:header_size])
+        
+        # Initialize an empty list for waypoints
+        waypoints = []
+        
+        # Define the format string for waypoints
+        waypoint_format = '<dd'
+        waypoint_size = 16  # Each waypoint is 2 doubles (16 bytes)
+        
+        # Unpack exactly 15 waypoints
+        for i in range(horizon_steps):
+            offset = header_size + i * waypoint_size
+            waypoint = unpack(waypoint_format, packet[offset:offset + waypoint_size])
+            waypoints.append(waypoint)
+        
+        return message_id, uav_id, gps_timestamp, (lat, lon, alt), heading, (vx, vy), waypoints
+
     def unpack_packet(self, packet):
         try:
             msg_id = Message_ID(packet[0])
@@ -232,7 +294,14 @@ class packet_processing(object):
                 for i in range(NnT):
                     self.uavs_info[9].append(list(np.multiply(unpack('ii', packet[43+Nt*5+Nct*2+i*8:43+Nt*5+Nct*2+(i+1)*8]), 1e-3)))
                 self.task_locking.append(fix)
-            return Message_ID.SEAD, None            
+            return Message_ID.SEAD, None
+        ## return info for MAPF
+        elif msg_id == Message_ID.MAPF:
+            if packet[1] == self.uav_id:
+                decoded_message = unpack_mapf_packet(packet) ## not sure why this unpack_mapf_packet() can't be recognized by python
+                return Message_ID.MAPF, self.unpack_mapf_packet(packet[1:])
+            else:
+                return Message_ID.info, "Wrong UAV delegation on MAPF command"                        
 
 
 class Message_ID(Enum):
@@ -249,7 +318,7 @@ class Message_ID(Enum):
     info = 44
     SEAD = 17          # (U2U)
     SEAD_mission = 18  # (G2U)
-
+    MAPF = 19
 
 class Mode(Enum):
     STABILIZE = 0
